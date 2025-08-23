@@ -25,7 +25,7 @@ st.set_page_config(
 @st.cache_resource
 def download_nltk_resources():
     try:
-        stopwords.words('portuguese')
+        stopwords.words('english')
     except LookupError:
         nltk.download('stopwords')
     try:
@@ -39,7 +39,7 @@ def preprocess(text):
     text = str(text).lower()
     text = re.sub(r'[^a-záàâãéèêíïóôõöúçñ ]', '', text)
     tokens = text.split()
-    stop_words = set(stopwords.words('portuguese'))
+    stop_words = set(stopwords.words('english'))
     stemmer = RSLPStemmer()
     processed_tokens = [stemmer.stem(word) for word in tokens if word not in stop_words]
     return ' '.join(processed_tokens)
