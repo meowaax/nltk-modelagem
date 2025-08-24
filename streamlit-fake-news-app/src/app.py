@@ -4,43 +4,42 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.pipeline import make_pipeline # <-- Importação do Pipeline
 import re
 import nltk
 from nltk.corpus import stopwords
-from nltk.stem import RSLPStemmer
+from nltk.stem import PorterStemmer # Stemmer para Inglês
 import os
 import seaborn as sns
 import matplotlib.pyplot as plt
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
-    page_title="Detector de Fake News",
+    page_title="Detector de Fake News (Inglês)",
     page_icon="📰",
     layout="wide",
 )
 
 # --- FUNÇÕES AUXILIARES ---
 
-# Baixar recursos necessários do NLTK (apenas na primeira vez)
 @st.cache_resource
 def download_nltk_resources():
+    # Baixa apenas os recursos necessários para o inglês
     try:
-        stopwords.words('english')
+        nltk.data.find('corpora/stopwords')
     except LookupError:
         nltk.download('stopwords')
-    try:
-        nltk.data.find('stemmers/rslp')
-    except LookupError:
-        nltk.download('rslp')
 
 download_nltk_resources()
 
 def preprocess(text):
+    # Função de pré-processamento dedicada ao inglês
     text = str(text).lower()
-    text = re.sub(r'[^a-záàâãéèêíïóôõöúçñ ]', '', text)
-    tokens = text.split()
+    text = re.sub(r'[^a-z ]', '', text) # Remove tudo que não for letra ou espaço
     stop_words = set(stopwords.words('english'))
-    stemmer = RSLPStemmer()
+    stemmer = PorterStemmer()
+    
+    tokens = text.split()
     processed_tokens = [stemmer.stem(word) for word in tokens if word not in stop_words]
     return ' '.join(processed_tokens)
 
@@ -61,24 +60,32 @@ def treinar_modelo_com_dados(df):
     if 'title' in df.columns and 'real' in df.columns:
         df['titulo_processado'] = df['title'].apply(preprocess)
         
-        vectorizer = TfidfVectorizer(max_features=5000)
-        X = vectorizer.fit_transform(df['titulo_processado'])
+        # Os dados X agora são o texto processado, não a matriz vetorizada
+        X = df['titulo_processado']
         y = df['real']
         
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
         
-        model = LogisticRegression(max_iter=1000)
-        model.fit(X_train, y_train)
+        # --- MELHORIA: USO DO PIPELINE ---
+        # Cria um pipeline que primeiro vetoriza o texto e depois treina o modelo.
+        # Isso simplifica o código e segue as melhores práticas.
+        pipeline = make_pipeline(
+            TfidfVectorizer(max_features=5000),
+            LogisticRegression(max_iter=1000)
+        )
         
-        return model, vectorizer, X_test, y_test
+        pipeline.fit(X_train, y_train)
+        
+        # Retorna o pipeline inteiro e os dados de teste
+        return pipeline, X_test, y_test
     else:
         st.error("O arquivo CSV carregado não contém as colunas necessárias ('title', 'real').")
-        return None, None, None, None
+        return None, None, None
 
 # --- LAYOUT DA APLICAÇÃO ---
 
-st.title("📰 Detector de Fake News Dinâmico 📰")
-st.markdown("Faça o upload de um arquivo CSV para treinar um modelo de Machine Learning e começar a classificar notícias.")
+st.title("📰 Detector de Fake News (Inglês)")
+st.markdown("Faça o upload de um arquivo CSV com notícias em **inglês** para treinar o modelo.")
 
 # --- BARRA LATERAL PARA UPLOAD ---
 with st.sidebar:
@@ -86,42 +93,42 @@ with st.sidebar:
     uploaded_file = st.file_uploader(
         "Escolha um arquivo CSV",
         type="csv",
-        help="O arquivo CSV deve conter as colunas 'title' (título da notícia) e 'real' (1 para real, 0 para fake)."
+        help="O arquivo CSV deve conter as colunas 'title' (título da notícia em inglês) e 'real' (1 para real, 0 para fake)."
     )
 
 # --- LÓGICA PRINCIPAL ---
 if uploaded_file is not None:
     try:
-        # Tenta ler com diferentes encodings
         try:
             dataframe = pd.read_csv(uploaded_file, sep=';')
         except UnicodeDecodeError:
-            uploaded_file.seek(0) # Retorna ao início do arquivo
+            uploaded_file.seek(0)
             dataframe = pd.read_csv(uploaded_file, sep=';', encoding='latin1')
-        
+
         st.sidebar.success("Arquivo carregado com sucesso!")
         st.sidebar.write("Amostra dos dados:")
-        # --- ALTERAÇÃO AQUI ---
-        # Removido o .head() para mostrar o DataFrame completo
         st.sidebar.dataframe(dataframe)
 
-        model, vectorizer, X_test, y_test = treinar_modelo_com_dados(dataframe)
+        # A função agora retorna o pipeline treinado
+        pipeline, X_test, y_test = treinar_modelo_com_dados(dataframe)
 
-        if model:
-            main_col1, main_col2 = st.columns([2, 3]) # Divide a tela em duas colunas
+        if pipeline:
+            main_col1, main_col2 = st.columns([2, 3])
 
             with main_col1:
                 st.subheader("2. Classifique uma nova notícia")
                 nova_noticia = st.text_area(
-                    "Digite o título da notícia:", 
+                    "Digite o título da notícia (em inglês):", 
                     height=150, 
-                    placeholder="Ex: 'Cientistas descobrem a cura para...'"
+                    placeholder="Ex: 'Scientists discover the cure for...'"
                 )
                 
                 if st.button("Analisar Notícia", type="primary", use_container_width=True):
                     if nova_noticia:
                         texto_proc = preprocess(nova_noticia)
-                        predicao = model.predict(vectorizer.transform([texto_proc]))
+                        # --- CÓDIGO SIMPLIFICADO ---
+                        # O pipeline lida com a vetorização e a predição em um único passo.
+                        predicao = pipeline.predict([texto_proc])
                         
                         if str(predicao[0]) == "1":
                             st.success("✅ A notícia parece ser: **Real**")
@@ -132,8 +139,8 @@ if uploaded_file is not None:
 
             with main_col2:
                 st.subheader("3. Performance do Modelo")
-                y_pred = model.predict(X_test)
-                
+                # O pipeline também simplifica a predição no conjunto de teste
+                y_pred = pipeline.predict(X_test)
                 st.metric(label="Acurácia Geral do Modelo", value=f"{accuracy_score(y_test, y_pred):.2%}")
                 
                 with st.expander("🔍 Ver detalhes da performance"):
@@ -147,9 +154,7 @@ if uploaded_file is not None:
                         st.write("**Matriz de Confusão:**")
                         cm = confusion_matrix(y_test, y_pred)
                         plot_confusion_matrix(cm, classes=['Falsa', 'Real'])
-
     except Exception as e:
         st.error(f"Ocorreu um erro ao processar o arquivo: {e}")
-
 else:
-    st.info("Aguardando o upload de um arquivo CSV para começar.")
+    st.info("Aguardando o upload de um arquivo CSV (em inglês) para começar.")
