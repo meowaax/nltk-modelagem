@@ -3,11 +3,13 @@ import streamlit as st
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
+from nltk.classify import NaiveBayesClassifier, accuracy
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from sklearn.pipeline import make_pipeline # <-- Importação do Pipeline
 import re
 import nltk
 from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
 from nltk.stem import PorterStemmer # Stemmer para Inglês
 import os
 import seaborn as sns
@@ -32,16 +34,31 @@ def download_nltk_resources():
 
 download_nltk_resources()
 
+stop_words = set(stopwords.words('english'))
+stemmer = PorterStemmer()
+
 def preprocess(text):
-    # Função de pré-processamento dedicada ao inglês
-    text = str(text).lower()
-    text = re.sub(r'[^a-z ]', '', text) # Remove tudo que não for letra ou espaço
-    stop_words = set(stopwords.words('english'))
-    stemmer = PorterStemmer()
-    
-    tokens = text.split()
-    processed_tokens = [stemmer.stem(word) for word in tokens if word not in stop_words]
-    return ' '.join(processed_tokens)
+    if not isinstance(text, str):
+        text = '' if text is None else str(text)
+
+    text = text.lower()
+    text = re.sub(r'http\S+|www\.\S+', ' ', text)   # URLs
+    text = re.sub(r'<.*?>', ' ', text)              # HTML
+    tokens = word_tokenize(text, preserve_line= True)
+
+    # limpa tokens: tira pontuação e stopwords, mantém só letras com len>2
+    tokens = [t for t in tokens if t.isalpha()]
+    tokens = [t for t in tokens if t not in stop_words and len(t) > 2]
+
+    # stemming
+    tokens = [stemmer.stem(t) for t in tokens]
+    return tokens
+
+def tokens_to_features(tokens):
+    features = {}
+    for t in tokens:
+        features[t] = features.get(t, 0) + 1
+    return features
 
 def plot_confusion_matrix(cm, classes):
     fig, ax = plt.subplots(figsize=(5, 4))
@@ -58,29 +75,19 @@ def plot_confusion_matrix(cm, classes):
 @st.cache_data
 def treinar_modelo_com_dados(df):
     if 'title' in df.columns and 'real' in df.columns:
-        df['titulo_processado'] = df['title'].apply(preprocess)
+        dataset = [(tokens_to_features(preprocess(text)), int(label)) for text, label in zip(df['title'], df['real'])]
         
-        # Os dados X agora são o texto processado, não a matriz vetorizada
-        X = df['titulo_processado']
-        y = df['real']
+        train_set, test_set = train_test_split(dataset, test_size=0.3, random_state=42)
+        classifier = NaiveBayesClassifier.train(train_set)
         
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-        
-        # --- MELHORIA: USO DO PIPELINE ---
-        # Cria um pipeline que primeiro vetoriza o texto e depois treina o modelo.
-        # Isso simplifica o código e segue as melhores práticas.
-        pipeline = make_pipeline(
-            TfidfVectorizer(max_features=5000),
-            LogisticRegression(max_iter=1000)
-        )
-        
-        pipeline.fit(X_train, y_train)
+        y_true = [label for (_, label) in test_set]
+        y_pred = [classifier.classify(feats) for (feats, _) in test_set]
         
         # Retorna o pipeline inteiro e os dados de teste
-        return pipeline, X_test, y_test
+        return classifier, y_true, y_pred, test_set
     else:
         st.error("O arquivo CSV carregado não contém as colunas necessárias ('title', 'real').")
-        return None, None, None
+        return None
 
 # --- LAYOUT DA APLICAÇÃO ---
 
@@ -110,9 +117,9 @@ if uploaded_file is not None:
         st.sidebar.dataframe(dataframe)
 
         # A função agora retorna o pipeline treinado
-        pipeline, X_test, y_test = treinar_modelo_com_dados(dataframe)
+        classifier, y_true, y_pred, test_set = treinar_modelo_com_dados(dataframe)
 
-        if pipeline:
+        if classifier:
             main_col1, main_col2 = st.columns([2, 3])
 
             with main_col1:
@@ -126,11 +133,12 @@ if uploaded_file is not None:
                 if st.button("Analisar Notícia", type="primary", use_container_width=True):
                     if nova_noticia:
                         texto_proc = preprocess(nova_noticia)
+                        features = tokens_to_features(texto_proc)
                         # --- CÓDIGO SIMPLIFICADO ---
                         # O pipeline lida com a vetorização e a predição em um único passo.
-                        predicao = pipeline.predict([texto_proc])
+                        predicao = classifier.classify(features)
                         
-                        if str(predicao[0]) == "1":
+                        if str(predicao) == "1":
                             st.success("✅ A notícia parece ser: **Real**")
                         else:
                             st.error("❌ A notícia parece ser: **Fake**")
@@ -139,20 +147,19 @@ if uploaded_file is not None:
 
             with main_col2:
                 st.subheader("3. Performance do Modelo")
-                # O pipeline também simplifica a predição no conjunto de teste
-                y_pred = pipeline.predict(X_test)
-                st.metric(label="Acurácia Geral do Modelo", value=f"{accuracy_score(y_test, y_pred):.2%}")
+                
+                st.metric(label="Acurácia Geral do Modelo", value=f"{(accuracy(classifier, test_set)):.2%}")
                 
                 with st.expander("🔍 Ver detalhes da performance"):
                     col1, col2 = st.columns(2)
                     with col1:
                         st.write("**Relatório de Classificação:**")
-                        report = classification_report(y_test, y_pred, target_names=['Falsa', 'Real'], output_dict=True)
+                        report = classification_report(y_true, y_pred, target_names=['Falsa', 'Real'], output_dict=True)
                         df_report = pd.DataFrame(report).transpose()
                         st.dataframe(df_report.round(2))
                     with col2:
                         st.write("**Matriz de Confusão:**")
-                        cm = confusion_matrix(y_test, y_pred)
+                        cm = confusion_matrix(y_true, y_pred)
                         plot_confusion_matrix(cm, classes=['Falsa', 'Real'])
     except Exception as e:
         st.error(f"Ocorreu um erro ao processar o arquivo: {e}")
